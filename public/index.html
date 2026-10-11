@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lead Extractor</title>
+<meta name="description" content="Paste any text and instantly pull out every email, phone number and link as a clean list.">
+<style>
+  :root {
+    --bg: #07070d; --panel: #101019; --line: #25253a; --text: #e9e9f5; --muted: #8b8ba7;
+    --neon: #00f0ff; --pink: #ff2bd6; --ok: #35ffa3; --warn: #ffb347;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background-image: radial-gradient(900px 400px at 15% -10%, rgba(0,240,255,.12), transparent),
+                      radial-gradient(800px 400px at 90% 0%, rgba(255,43,214,.10), transparent);
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 48px 20px 80px; }
+  h1 { margin: 0 0 6px; font-size: clamp(28px, 5vw, 42px); letter-spacing: -.02em;
+       text-shadow: 0 0 22px rgba(0,240,255,.45); }
+  .sub { color: var(--muted); margin: 0 0 28px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; }
+  textarea {
+    width: 100%; min-height: 200px; resize: vertical; background: #0b0b14; color: var(--text);
+    border: 1px solid var(--line); border-radius: 10px; padding: 12px; font: 14px/1.5 ui-monospace, Consolas, monospace;
+  }
+  textarea:focus { outline: none; border-color: var(--neon); box-shadow: 0 0 0 3px rgba(0,240,255,.15); }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; align-items: center; }
+  button {
+    border: 1px solid var(--neon); background: transparent; color: var(--neon); padding: 10px 18px;
+    border-radius: 10px; font-weight: 600; cursor: pointer; font-size: 15px;
+  }
+  button:hover:not(:disabled) { background: rgba(0,240,255,.12); box-shadow: 0 0 18px rgba(0,240,255,.35); }
+  button.primary { background: var(--neon); color: #001316; }
+  button.pink { border-color: var(--pink); color: var(--pink); }
+  button.pink:hover:not(:disabled) { background: rgba(255,43,214,.12); box-shadow: 0 0 18px rgba(255,43,214,.35); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  #msg { color: var(--muted); font-size: 14px; }
+  #msg.ok { color: var(--ok); } #msg.warn { color: var(--warn); }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); word-break: break-all; }
+  th { color: var(--muted); font-weight: 600; }
+  .tag { font-size: 12px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
+  .hide { display: none; }
+  .upsell { margin-top: 16px; border-color: rgba(255,43,214,.45); }
+  .upsell b { color: var(--pink); }
+  footer { margin-top: 32px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">Lead Extractor</h1>
+  <p class="sub">Paste any messy text, get every email, phone number and link back as a clean, de-duplicated list.</p>
+
+  <section class="card">
+    <textarea id="input" placeholder="Paste a web page, a spreadsheet, an email thread, anything..."></textarea>
+    <div class="row">
+      <button class="primary" id="go">Extract</button>
+      <button id="csv" disabled>Download CSV</button>
+      <span id="msg"></span>
+    </div>
+  </section>
+
+  <section class="card hide" id="results">
+    <div id="summary"></div>
+    <table>
+      <thead><tr><th>Type</th><th>Value</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </section>
+
+  <section class="card upsell hide" id="upsell">
+    <div id="upsellText"></div>
+    <div class="row"><button class="pink" id="buy">Unlock everything</button><span id="buyMsg"></span></div>
+  </section>
+
+  <footer>Your text is processed in memory and never stored.</footer>
+</main>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var status = null;
+  var lastItems = [];
+
+  function money(cents, cur) {
+    try { return new Intl.NumberFormat(undefined, { style: "currency", currency: cur.toUpperCase() }).format(cents / 100); }
+    catch (e) { return (cents / 100).toFixed(2) + " " + cur.toUpperCase(); }
+  }
+
+  function setMsg(text, cls) { var m = $("msg"); m.textContent = text || ""; m.className = cls || ""; }
+
+  async function loadStatus() {
+    var r = await fetch("/api/status");
+    status = await r.json();
+    $("title").textContent = status.title;
+    document.title = status.title;
+    var q = new URLSearchParams(location.search);
+    if (q.get("paid") === "1") setMsg("Payment received. Everything is unlocked.", "ok");
+    if (q.get("paid") === "0") setMsg("We could not confirm that payment. Contact support if you were charged.", "warn");
+    if (status.paid) setMsg("Full access active.", "ok");
+  }
+
+  function render(data) {
+    lastItems = data.items;
+    $("results").classList.remove("hide");
+    $("summary").textContent = "Found " + data.total + " unique item" + (data.total === 1 ? "" : "s") +
+      (data.truncated ? " (showing " + data.items.length + ")" : "");
+    var body = $("rows");
+    body.textContent = "";
+    data.items.forEach(function (it) {
+      var tr = document.createElement("tr");
+      var a = document.createElement("td");
+      var tag = document.createElement("span"); tag.className = "tag"; tag.textContent = it.type; a.appendChild(tag);
+      var b = document.createElement("td"); b.textContent = it.value;
+      tr.appendChild(a); tr.appendChild(b); body.appendChild(tr);
+    });
+    $("csv").disabled = data.items.length === 0;
+    var up = $("upsell");
+    if (data.truncated) {
+      up.classList.remove("hide");
+      $("upsellText").innerHTML = "<b>" + (data.total - data.items.length) + " more results are locked.</b> Get unlimited results for " +
+        status.passDays + " days for " + money(status.priceCents, status.currency) + ", one payment, no subscription.";
+      $("buy").disabled = !status.paymentsConfigured;
+      $("buyMsg").textContent = status.paymentsConfigured ? "" : "Payments are not set up on this site yet.";
+    } else {
+      up.classList.add("hide");
+    }
+  }
+
+  $("go").onclick = async function () {
+    var text = $("input").value;
+    if (!text.trim()) { setMsg("Paste some text first.", "warn"); return; }
+    $("go").disabled = true; setMsg("Working...");
+    try {
+      var r = await fetch("/api/extract", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: text }) });
+      var data = await r.json();
+      if (!r.ok) { setMsg(data.error || "Something went wrong.", "warn"); }
+      else { setMsg(""); render(data); }
+    } catch (e) { setMsg("Network error, please retry.", "warn"); }
+    $("go").disabled = false;
+  };
+
+  $("csv").onclick = function () {
+    var esc = function (s) { return '"' + String(s).replace(/"/g, '""') + '"'; };
+    var lines = ["type,value"].concat(lastItems.map(function (it) { return esc(it.type) + "," + esc(it.value); }));
+    var blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = "extracted.csv"; a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  $("buy").onclick = async function () {
+    $("buy").disabled = true; $("buyMsg").textContent = "Opening checkout...";
+    try {
+      var r = await fetch("/api/checkout", { method: "POST" });
+      var d = await r.json();
+      if (r.ok && d.url) { location.href = d.url; return; }
+      $("buyMsg").textContent = d.error || "Could not start checkout.";
+    } catch (e) { $("buyMsg").textContent = "Network error, please retry."; }
+    $("buy").disabled = false;
+  };
+
+  loadStatus();
+})();
+</script>
+</body>
+</html>
